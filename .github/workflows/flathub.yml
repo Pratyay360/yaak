@@ -1,27 +1,23 @@
 name: Update Flathub
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to build (e.g., v1.2.3)'
+        required: true
+        type: string
+
 permissions:
-  contents: read
+  contents: write  # Required to upload assets to releases
   actions: write
-  
 
 jobs:
-  update-flathub:
-    name: Update Flathub manifest
+  build-and-upload:
+    name: Build and upload .flatpak
     runs-on: ubuntu-latest
-    # Only run for stable releases (skip betas/pre-releases)
-    if: ${{ !github.event.release.prerelease }}
     steps:
       - name: Checkout app repo
-        uses: actions/checkout@v4
-
-      - name: Checkout Flathub repo
-        uses: actions/checkout@v4
-        with:
-          repository: flathub/app.yaak.Yaak
-          token: ${{ secrets.FLATHUB_TOKEN }}
-          path: flathub-repo
+        uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,14 +35,32 @@ jobs:
           git clone --depth 1 https://github.com/flatpak/flatpak-builder-tools flatpak/flatpak-builder-tools
 
       - name: Run update-manifest.sh
-        run: bash flatpak/update-manifest.sh "${{ github.event.release.tag_name }}" flathub-repo
+        run: bash flatpak/update-manifest.sh "${{ inputs.version }}"
 
-      - name: Commit and push to Flathub
-        working-directory: flathub-repo
+      - name: Install Flatpak and flatpak-builder
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "Update to ${{ github.event.release.tag_name }}"
-          git push
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder elfutils
+          flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install required runtimes
+        run: |
+          # ⚠️ Update to match your manifest's runtime-version
+          flatpak install -y flathub org.freedesktop.Platform//22.08 org.freedesktop.Sdk//22.08
+
+      - name: Build .flatpak bundle
+        run: |
+          # ⚠️ Update path to your manifest file
+          MANIFEST="flatpak/app.yaak.Yaak.yml"
+          APP_ID="app.yaak.Yaak"  # ⚠️ Must match 'id' in your manifest
+          
+          flatpak-builder --repo=repo --force-clean build-dir "$MANIFEST"
+          flatpak build-bundle repo yaak-${{ inputs.version }}.flatpak "$APP_ID"
+
+      - name: Upload .flatpak to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: yaak-${{ inputs.version }}.flatpak
+          tag_name: ${{ inputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
